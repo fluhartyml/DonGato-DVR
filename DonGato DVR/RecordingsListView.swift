@@ -91,6 +91,13 @@ struct RecordingsListView: View {
 
                         // Action buttons
                         HStack(spacing: 16) {
+                            ShareLink(
+                                item: URL(fileURLWithPath: recording.fileURL)
+                            ) {
+                                Label("Share", systemImage: "square.and.arrow.up")
+                                    .font(.system(size: 18))
+                            }
+
                             Button {
                                 Task { await splitRecording(recording) }
                             } label: {

@@ -10,5 +10,9 @@
 	<string>DonGato DVR needs camera access to receive video from your capture device.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>DonGato DVR needs microphone access to record audio from your capture device.</string>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 </dict>
 </plist>
