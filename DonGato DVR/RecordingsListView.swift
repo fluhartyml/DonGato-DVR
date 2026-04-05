@@ -90,19 +90,21 @@ struct RecordingsListView: View {
                         }
 
                         // Action buttons
-                        HStack(spacing: 16) {
+                        HStack {
                             ShareLink(
                                 item: URL(fileURLWithPath: recording.fileURL)
                             ) {
-                                Label("Share", systemImage: "square.and.arrow.up")
-                                    .font(.system(size: 18))
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.system(size: 20))
                             }
+
+                            Spacer()
 
                             Button {
                                 Task { await splitRecording(recording) }
                             } label: {
-                                Label("Split", systemImage: "scissors")
-                                    .font(.system(size: 18))
+                                Image(systemName: "scissors")
+                                    .font(.system(size: 20))
                             }
                             .disabled(recording.segments.isEmpty || transcodeService.isTranscoding)
 
@@ -115,8 +117,8 @@ struct RecordingsListView: View {
                                     }
                                 }
                             } label: {
-                                Label("Transcode", systemImage: "arrow.triangle.2.circlepath")
-                                    .font(.system(size: 18))
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                    .font(.system(size: 20))
                             }
                             .disabled(transcodeService.isTranscoding)
                         }

@@ -74,52 +74,35 @@ struct TransportControlsView: View {
     }
 
     private func stopAndProcess() async {
-        let splits = captureService.splitPoints
         let contentMode = captureService.contentMode
         let quality = captureService.quality
+        let duration = captureService.elapsedTime
 
-        guard let url = await captureService.stopRecording() else { return }
+        let segmentFiles = await captureService.stopRecording()
 
-        // Create recording in SwiftData
-        let recording = Recording(
-            title: "Recording \(DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short))",
-            dateRecorded: Date(),
-            duration: captureService.elapsedTime,
-            fileURL: url.path,
-            qualityPreset: quality.rawValue,
-            contentMode: contentMode.rawValue,
-            fileSize: (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0,
-            isProcessed: !splits.isEmpty
-        )
-
-        // Create segments from split points
-        var segments: [Segment] = []
-        let sortedSplits = splits.sorted { $0.time < $1.time }
-        var lastTime: TimeInterval = 0
-
-        for (index, split) in sortedSplits.enumerated() {
-            let segment = Segment(
-                index: index,
-                startTime: lastTime,
-                endTime: split.time,
-                detectionType: split.type.rawValue
+        // Create a recording entry for each segment file
+        for file in segmentFiles {
+            let recording = Recording(
+                title: "Seg \(file.index + 1) — \(DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short))",
+                dateRecorded: Date(),
+                duration: file.duration,
+                fileURL: file.url.path,
+                qualityPreset: quality.rawValue,
+                contentMode: contentMode.rawValue,
+                fileSize: file.fileSize,
+                isProcessed: true
             )
-            segments.append(segment)
-            lastTime = split.time
-        }
 
-        // Final segment
-        if lastTime < captureService.elapsedTime {
             let segment = Segment(
-                index: segments.count,
-                startTime: lastTime,
-                endTime: captureService.elapsedTime,
-                detectionType: "end"
+                index: file.index,
+                startTime: file.startTime,
+                endTime: file.endTime,
+                detectionType: file.detectionType,
+                fileURL: file.url.path,
+                isExported: true
             )
-            segments.append(segment)
+            recording.segments = [segment]
+            modelContext.insert(recording)
         }
-
-        recording.segments = segments
-        modelContext.insert(recording)
     }
 }

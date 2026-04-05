@@ -114,7 +114,7 @@ struct AboutView: View {
                 VStack(spacing: 8) {
                     Text("Michael Fluharty")
                         .font(.system(size: 20, weight: .bold))
-                    Text("sigfigprd")
+                    Text("nightgard")
                         .font(.system(size: 18))
                         .foregroundStyle(.secondary)
                 }

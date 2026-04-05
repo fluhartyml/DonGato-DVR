@@ -53,13 +53,17 @@ final class CaptureService: NSObject {
     private(set) var deviceName: String = "No Device"
     private(set) var isUsingBuiltInCamera = false
     private(set) var splitPoints: [SplitPoint] = []
-    private(set) var currentRecordingURL: URL?
     private(set) var splitPressTime: TimeInterval?
+    private(set) var segmentFiles: [SegmentFile] = []
     var isSplitPressed = false
     var cameraPosition: AVCaptureDevice.Position = .back
 
     var quality: CaptureQuality = .fullHD
     var contentMode: ContentMode = .chapters
+
+    // Current segment tracking
+    private(set) var currentSegmentIndex = 0
+    private(set) var currentSegmentURL: URL?
 
     private var captureSession: AVCaptureSession?
     private var videoOutput: AVCaptureVideoDataOutput?
@@ -71,9 +75,14 @@ final class CaptureService: NSObject {
     private var lastSegmentSplitTime: TimeInterval = 0
     private var recordingTimer: Timer?
     private var isWritingStarted = false
+    private var isCyclingWriter = false // Lock to prevent frame drops during cycle
+    private var recordingsDir: URL?
+    private var recordingBaseName: String = ""
+    private var segmentStartTime: TimeInterval = 0
 
     private let processingQueue = DispatchQueue(label: "com.dongato.capture", qos: .userInitiated)
     private let audioQueue = DispatchQueue(label: "com.dongato.audio", qos: .userInitiated)
+    private let writerQueue = DispatchQueue(label: "com.dongato.writer", qos: .userInitiated)
 
     var sceneDetector: SceneDetector?
 
@@ -84,11 +93,29 @@ final class CaptureService: NSObject {
         return layer
     }
 
+    // MARK: - Segment File Tracking
+
+    struct SegmentFile: Identifiable {
+        let id = UUID()
+        let index: Int
+        let url: URL
+        let startTime: TimeInterval
+        var endTime: TimeInterval
+        let detectionType: String
+
+        var duration: TimeInterval { endTime - startTime }
+
+        var fileSize: Int64 {
+            (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+        }
+    }
+
+    // MARK: - Session Setup
+
     func setupSession() {
         let session = AVCaptureSession()
         session.beginConfiguration()
 
-        // Look for UVC capture device (Elgato or similar), fall back to built-in camera
         let externalDiscovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.external],
             mediaType: .video,
@@ -120,7 +147,6 @@ final class CaptureService: NSObject {
                 session.addInput(videoInput)
             }
 
-            // Audio input — external device first, then built-in mic
             let audioDevice: AVCaptureDevice?
             if !isUsingBuiltInCamera {
                 let audioDiscovery = AVCaptureDevice.DiscoverySession(
@@ -143,7 +169,6 @@ final class CaptureService: NSObject {
             deviceName = "Device Error: \(error.localizedDescription)"
         }
 
-        // Video data output for frame analysis
         let videoDataOutput = AVCaptureVideoDataOutput()
         videoDataOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
@@ -154,7 +179,6 @@ final class CaptureService: NSObject {
         }
         self.videoOutput = videoDataOutput
 
-        // Audio data output for silence detection
         let audioDataOutput = AVCaptureAudioDataOutput()
         audioDataOutput.setSampleBufferDelegate(self, queue: audioQueue)
         if session.canAddOutput(audioDataOutput) {
@@ -165,6 +189,8 @@ final class CaptureService: NSObject {
         session.commitConfiguration()
         self.captureSession = session
     }
+
+    // MARK: - Camera Controls
 
     func flipCamera() {
         guard isUsingBuiltInCamera, !isRecording else { return }
@@ -177,7 +203,6 @@ final class CaptureService: NSObject {
     func changeQuality(_ newQuality: CaptureQuality) {
         guard !isRecording else { return }
         quality = newQuality
-        // If using built-in camera, reconfigure session for new resolution
         if isUsingBuiltInCamera {
             guard let session = captureSession else { return }
             session.beginConfiguration()
@@ -203,6 +228,8 @@ final class CaptureService: NSObject {
         }
     }
 
+    // MARK: - Preview
+
     func startPreview() {
         guard let session = captureSession, !session.isRunning else { return }
         processingQueue.async {
@@ -219,60 +246,108 @@ final class CaptureService: NSObject {
         isPreviewing = false
     }
 
+    // MARK: - Writer Management
+
+    private func createWriter(segmentIndex: Int) throws -> (AVAssetWriter, AVAssetWriterInput, AVAssetWriterInput) {
+        guard let dir = recordingsDir else {
+            throw NSError(domain: "DonGato", code: 1, userInfo: [NSLocalizedDescriptionKey: "No recordings directory"])
+        }
+
+        let filename = "\(recordingBaseName)_Seg\(String(format: "%03d", segmentIndex)).mov"
+        let outputURL = dir.appendingPathComponent(filename)
+
+        let dims = quality.dimensions
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
+
+        let videoSettings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: dims.width,
+            AVVideoHeightKey: dims.height,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoAverageBitRateKey: dims.width * dims.height * 4
+            ]
+        ]
+        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        videoInput.expectsMediaDataInRealTime = true
+        if writer.canAdd(videoInput) {
+            writer.add(videoInput)
+        }
+
+        let audioSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 44100,
+            AVNumberOfChannelsKey: 2,
+            AVEncoderBitRateKey: 128000
+        ]
+        let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+        audioInput.expectsMediaDataInRealTime = true
+        if writer.canAdd(audioInput) {
+            writer.add(audioInput)
+        }
+
+        writer.startWriting()
+        currentSegmentURL = outputURL
+
+        return (writer, videoInput, audioInput)
+    }
+
+    private func finalizeCurrentWriter(endTime: TimeInterval, detectionType: String) {
+        guard let writer = assetWriter, let url = currentSegmentURL else { return }
+
+        videoWriterInput?.markAsFinished()
+        audioWriterInput?.markAsFinished()
+
+        let segIndex = currentSegmentIndex
+        let startTime = segmentStartTime
+
+        // Add to segment files list
+        let segment = SegmentFile(
+            index: segIndex,
+            url: url,
+            startTime: startTime,
+            endTime: endTime,
+            detectionType: detectionType
+        )
+
+        writer.finishWriting { [weak self] in
+            DispatchQueue.main.async {
+                self?.segmentFiles.append(segment)
+            }
+        }
+    }
+
+    // MARK: - Recording
+
     func startRecording() {
         guard !isRecording else { return }
 
-        let dims = quality.dimensions
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let recordingsDir = documentsURL.appendingPathComponent("Recordings", isDirectory: true)
-        try? FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+        let dir = documentsURL.appendingPathComponent("Recordings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        self.recordingsDir = dir
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HHmmss"
-        let filename = "DonGato_\(formatter.string(from: Date())).mov"
-        let outputURL = recordingsDir.appendingPathComponent(filename)
+        self.recordingBaseName = "DonGato_\(formatter.string(from: Date()))"
 
         do {
-            let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-
-            let videoSettings: [String: Any] = [
-                AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: dims.width,
-                AVVideoHeightKey: dims.height,
-                AVVideoCompressionPropertiesKey: [
-                    AVVideoAverageBitRateKey: dims.width * dims.height * 4
-                ]
-            ]
-            let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-            videoInput.expectsMediaDataInRealTime = true
-            if writer.canAdd(videoInput) {
-                writer.add(videoInput)
-            }
-            self.videoWriterInput = videoInput
-
-            let audioSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 44100,
-                AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: 128000
-            ]
-            let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-            audioInput.expectsMediaDataInRealTime = true
-            if writer.canAdd(audioInput) {
-                writer.add(audioInput)
-            }
-            self.audioWriterInput = audioInput
-
-            writer.startWriting()
+            let (writer, videoInput, audioInput) = try createWriter(segmentIndex: 0)
             self.assetWriter = writer
-            self.currentRecordingURL = outputURL
+            self.videoWriterInput = videoInput
+            self.audioWriterInput = audioInput
             self.sessionStartTime = nil
             self.isWritingStarted = false
+            self.isCyclingWriter = false
             self.splitPoints = []
+            self.segmentFiles = []
             self.lastSegmentSplitTime = 0
             self.elapsedTime = 0
             self.segmentTime = 0
+            self.currentSegmentIndex = 0
+            self.segmentStartTime = 0
             self.isRecording = true
+
+            sceneDetector?.reset()
 
             recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 guard let self, self.isRecording else { return }
@@ -284,28 +359,56 @@ final class CaptureService: NSObject {
         }
     }
 
-    func stopRecording() async -> URL? {
-        guard isRecording else { return nil }
+    func stopRecording() async -> [SegmentFile] {
+        guard isRecording else { return [] }
         isRecording = false
         recordingTimer?.invalidate()
         recordingTimer = nil
 
-        guard let writer = assetWriter else { return nil }
+        // Finalize the last segment
+        finalizeCurrentWriter(endTime: elapsedTime, detectionType: "end")
 
-        videoWriterInput?.markAsFinished()
-        audioWriterInput?.markAsFinished()
+        // Wait briefly for the writer to finish
+        try? await Task.sleep(for: .milliseconds(500))
 
-        await writer.finishWriting()
-
-        let url = currentRecordingURL
+        let files = segmentFiles
         assetWriter = nil
         videoWriterInput = nil
         audioWriterInput = nil
         sessionStartTime = nil
         isWritingStarted = false
 
-        return url
+        return files
     }
+
+    // MARK: - Live Split (Cycle Writer)
+
+    private func performLiveSplit(at splitTime: TimeInterval, detectionType: String) {
+        guard isRecording, !isCyclingWriter else { return }
+        isCyclingWriter = true
+
+        // Finalize the current segment
+        finalizeCurrentWriter(endTime: splitTime, detectionType: detectionType)
+
+        // Start a new segment
+        currentSegmentIndex += 1
+        segmentStartTime = splitTime
+
+        do {
+            let (writer, videoInput, audioInput) = try createWriter(segmentIndex: currentSegmentIndex)
+            self.assetWriter = writer
+            self.videoWriterInput = videoInput
+            self.audioWriterInput = audioInput
+            self.sessionStartTime = nil
+            self.isWritingStarted = false
+        } catch {
+            print("Failed to cycle writer: \(error)")
+        }
+
+        isCyclingWriter = false
+    }
+
+    // MARK: - Manual Split (Press and Hold)
 
     func beginManualSplit() {
         guard isRecording else { return }
@@ -320,11 +423,16 @@ final class CaptureService: NSObject {
         isSplitPressed = false
         splitPressTime = nil
 
-        // Smart snap — search between press and release for the best cut
         let point = detector.smartSnap(pressTime: pressTime, releaseTime: releaseTime)
         splitPoints.append(point)
         lastSegmentSplitTime = point.time
         segmentTime = elapsedTime - point.time
+
+        // Cycle the writer — new file starts now
+        writerQueue.async { [weak self] in
+            self?.performLiveSplit(at: point.time, detectionType: DetectionType.manual.rawValue)
+        }
+
         detector.onSplitDetected?(.manual, point.time)
     }
 }
@@ -334,6 +442,9 @@ final class CaptureService: NSObject {
 extension CaptureService: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+
+        // Skip frames while cycling writer to prevent crashes
+        guard !isCyclingWriter else { return }
 
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
@@ -355,6 +466,12 @@ extension CaptureService: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                 if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
                     let detectedSplit = detector.analyzeFrame(pixelBuffer, at: elapsedTime)
                     if let split = detectedSplit {
+                        // Auto-detected split — cycle writer on background queue
+                        let splitTime = split.time
+                        let splitType = split.type.rawValue
+                        writerQueue.async { [weak self] in
+                            self?.performLiveSplit(at: splitTime, detectionType: splitType)
+                        }
                         DispatchQueue.main.async { [weak self] in
                             self?.splitPoints.append(split)
                             self?.lastSegmentSplitTime = split.time
@@ -373,6 +490,11 @@ extension CaptureService: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
             if isRecording, let detector = sceneDetector {
                 let detectedSplit = detector.analyzeAudio(sampleBuffer, at: elapsedTime)
                 if let split = detectedSplit {
+                    let splitTime = split.time
+                    let splitType = split.type.rawValue
+                    writerQueue.async { [weak self] in
+                        self?.performLiveSplit(at: splitTime, detectionType: splitType)
+                    }
                     DispatchQueue.main.async { [weak self] in
                         self?.splitPoints.append(split)
                         self?.lastSegmentSplitTime = split.time
