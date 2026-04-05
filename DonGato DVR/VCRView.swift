@@ -18,7 +18,16 @@ struct VCRView: View {
 
         VStack(spacing: 0) {
             // Video preview area
-            VideoPreviewContainer()
+            ZStack {
+                if !captureService.deviceConnected {
+                    Image("AppIcon")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 300, maxHeight: 300)
+                        .opacity(0.6)
+                }
+                VideoPreviewContainer()
+            }
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: 300)
                 .background(Color.black)
@@ -39,7 +48,7 @@ struct VCRView: View {
                     if !captureService.deviceConnected {
                         Text("NO SIGNAL")
                             .font(.system(size: 20, weight: .bold, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.6))
+                            .foregroundStyle(.red)
                             .padding(12)
                     } else if captureService.isUsingBuiltInCamera {
                         HStack(spacing: 6) {
