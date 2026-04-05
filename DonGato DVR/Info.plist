@@ -6,5 +6,9 @@
 	<array>
 		<string>remote-notification</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>DonGato DVR needs camera access to receive video from your capture device.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>DonGato DVR needs microphone access to record audio from your capture device.</string>
 </dict>
 </plist>

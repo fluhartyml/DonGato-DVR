@@ -10,9 +10,14 @@ import SwiftData
 
 @main
 struct DonGato_DVRApp: App {
+    @State private var captureService = CaptureService()
+    @State private var sceneDetector = SceneDetector()
+    @State private var transcodeService = TranscodeService()
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            Recording.self,
+            Segment.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -26,6 +31,9 @@ struct DonGato_DVRApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(captureService)
+                .environment(sceneDetector)
+                .environment(transcodeService)
         }
         .modelContainer(sharedModelContainer)
     }
