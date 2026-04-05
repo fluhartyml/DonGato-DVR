@@ -54,6 +54,8 @@ final class CaptureService: NSObject {
     private(set) var isUsingBuiltInCamera = false
     private(set) var splitPoints: [SplitPoint] = []
     private(set) var currentRecordingURL: URL?
+    private(set) var splitPressTime: TimeInterval?
+    var isSplitPressed = false
 
     var quality: CaptureQuality = .fullHD
     var contentMode: ContentMode = .chapters
@@ -267,13 +269,25 @@ final class CaptureService: NSObject {
         return url
     }
 
-    func addManualSplit() {
+    func beginManualSplit() {
         guard isRecording else { return }
-        let point = SplitPoint(time: elapsedTime, type: .manual)
+        splitPressTime = elapsedTime
+        isSplitPressed = true
+    }
+
+    func endManualSplit() {
+        guard isRecording, let detector = sceneDetector else { return }
+        let pressTime = splitPressTime ?? elapsedTime
+        let releaseTime = elapsedTime
+        isSplitPressed = false
+        splitPressTime = nil
+
+        // Smart snap — search between press and release for the best cut
+        let point = detector.smartSnap(pressTime: pressTime, releaseTime: releaseTime)
         splitPoints.append(point)
-        lastSegmentSplitTime = elapsedTime
-        segmentTime = 0
-        sceneDetector?.onSplitDetected?(.manual, elapsedTime)
+        lastSegmentSplitTime = point.time
+        segmentTime = elapsedTime - point.time
+        detector.onSplitDetected?(.manual, point.time)
     }
 }
 

@@ -58,6 +58,28 @@ final class SceneDetector {
     private var lastSplitTime: TimeInterval = 0
     private let minimumSplitInterval: TimeInterval = 2.0 // Prevent rapid-fire splits
 
+    // Smart snap — rolling buffer of frame analysis data
+    private var frameScores: [FrameScore] = []
+    private let maxBufferSeconds: TimeInterval = 3.0 // Keep 3 seconds of history
+
+    private var lastAudioLevel: Float = 1.0
+
+    struct FrameScore {
+        let time: TimeInterval
+        let brightness: Float
+        let histogramDiff: Float
+        let audioLevel: Float
+
+        /// Combined score — lower = better split candidate
+        /// Dark frames, big scene changes, and silence all make good cut points
+        var splitScore: Float {
+            let darknessScore = 1.0 - brightness       // darker = better
+            let changeScore = histogramDiff             // more change = better
+            let silenceScore = 1.0 - audioLevel         // quieter = better
+            return darknessScore * 0.4 + changeScore * 0.4 + silenceScore * 0.2
+        }
+    }
+
     // Presets
     enum Preset: String, CaseIterable, Identifiable {
         case broadcastTV = "Broadcast TV"
@@ -100,11 +122,29 @@ final class SceneDetector {
     // MARK: - Frame Analysis
 
     func analyzeFrame(_ pixelBuffer: CVPixelBuffer, at time: TimeInterval) -> SplitPoint? {
-        guard time - lastSplitTime > minimumSplitInterval else { return nil }
+        let brightness = averageBrightness(of: pixelBuffer)
+        let histogram = computeHistogram(of: pixelBuffer)
+        let histDiff: Float
+        if let previous = previousHistogram {
+            histDiff = histogramDifference(previous, histogram)
+        } else {
+            histDiff = 0
+        }
+
+        // Record frame score for smart snap (always, regardless of detection mode)
+        let score = FrameScore(time: time, brightness: brightness, histogramDiff: histDiff, audioLevel: lastAudioLevel)
+        frameScores.append(score)
+        // Prune buffer — keep only recent frames
+        let cutoff = time - maxBufferSeconds
+        frameScores.removeAll { $0.time < cutoff }
+
+        guard time - lastSplitTime > minimumSplitInterval else {
+            previousHistogram = histogram
+            return nil
+        }
 
         // Black frame detection
         if blackFrameEnabled {
-            let brightness = averageBrightness(of: pixelBuffer)
             let threshold = Float(1.0 - blackFrameThreshold) * 0.15 // Scale to useful range
 
             if brightness < threshold {
@@ -115,6 +155,7 @@ final class SceneDetector {
                     if time - start >= requiredDuration {
                         blackFrameStartTime = nil
                         lastSplitTime = time
+                        previousHistogram = histogram
                         onSplitDetected?(.blackFrame, time)
                         return SplitPoint(time: time, type: .blackFrame)
                     }
@@ -126,31 +167,31 @@ final class SceneDetector {
 
         // Scene change detection via histogram comparison
         if sceneChangeEnabled {
-            let histogram = computeHistogram(of: pixelBuffer)
-            if let previous = previousHistogram {
-                let difference = histogramDifference(previous, histogram)
+            if let _ = previousHistogram {
                 let threshold = (1.0 - sceneChangeSensitivity) * 0.8 + 0.1 // Range 0.1-0.9
 
-                if difference > threshold {
+                if histDiff > threshold {
                     previousHistogram = histogram
                     lastSplitTime = time
                     onSplitDetected?(.sceneChange, time)
                     return SplitPoint(time: time, type: .sceneChange)
                 }
             }
-            previousHistogram = histogram
         }
 
+        previousHistogram = histogram
         return nil
     }
 
     // MARK: - Audio Analysis
 
     func analyzeAudio(_ sampleBuffer: CMSampleBuffer, at time: TimeInterval) -> SplitPoint? {
+        let rms = audioRMS(from: sampleBuffer)
+        lastAudioLevel = rms
+
         guard audioGapEnabled else { return nil }
         guard time - lastSplitTime > minimumSplitInterval else { return nil }
 
-        let rms = audioRMS(from: sampleBuffer)
         let threshold = Float(audioGapThreshold) * 0.01 // Scale to audio levels
 
         if rms < threshold {
@@ -286,10 +327,39 @@ final class SceneDetector {
         return counted > 0 ? sqrt(sumSquares / counted) : 1.0
     }
 
+    // MARK: - Smart Snap
+
+    /// Called when user releases the manual split button.
+    /// Searches the rolling buffer between press and release times
+    /// for the best transition point. The human brackets the transition
+    /// with their finger — press when it starts, release when it ends.
+    func smartSnap(pressTime: TimeInterval, releaseTime: TimeInterval) -> SplitPoint {
+        // Pad the window — human reaction is slow, press comes after transition
+        // starts, release comes after it ends. Look 0.5s before press and 0.5s after release.
+        let paddedStart = pressTime - 0.5
+        let paddedEnd = releaseTime + 0.5
+        let candidates = frameScores.filter { $0.time >= paddedStart && $0.time <= paddedEnd }
+
+        // Find the best split candidate within the user-defined window
+        if let best = candidates.max(by: { $0.splitScore < $1.splitScore }) {
+            if best.splitScore > 0.15 {
+                lastSplitTime = best.time
+                return SplitPoint(time: best.time, type: .manual)
+            }
+        }
+
+        // No good candidate — split at the midpoint of the press window
+        let midpoint = (pressTime + releaseTime) / 2.0
+        lastSplitTime = midpoint
+        return SplitPoint(time: midpoint, type: .manual)
+    }
+
     func reset() {
         previousHistogram = nil
         blackFrameStartTime = nil
         silenceStartTime = nil
         lastSplitTime = 0
+        lastAudioLevel = 1.0
+        frameScores.removeAll()
     }
 }

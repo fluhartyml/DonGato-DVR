@@ -35,18 +35,28 @@ struct TransportControlsView: View {
             .disabled(!captureService.deviceConnected)
 
             // Manual split button
-            Button {
-                captureService.addManualSplit()
-            } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "scissors")
-                        .font(.system(size: 40))
-                        .foregroundStyle(.yellow)
-                    Text("SPLIT")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.yellow)
-                }
+            // Split button — press and hold to bracket the transition
+            VStack(spacing: 4) {
+                Image(systemName: "scissors")
+                    .font(.system(size: 40))
+                    .foregroundStyle(captureService.isSplitPressed ? .red : .yellow)
+                    .scaleEffect(captureService.isSplitPressed ? 1.3 : 1.0)
+                    .animation(.easeInOut(duration: 0.15), value: captureService.isSplitPressed)
+                Text(captureService.isSplitPressed ? "HOLD" : "SPLIT")
+                    .font(.system(size: 18, weight: .bold, design: .monospaced))
+                    .foregroundStyle(captureService.isSplitPressed ? .red : .yellow)
             }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if !captureService.isSplitPressed {
+                            captureService.beginManualSplit()
+                        }
+                    }
+                    .onEnded { _ in
+                        captureService.endManualSplit()
+                    }
+            )
             .disabled(!captureService.isRecording)
             .opacity(captureService.isRecording ? 1.0 : 0.3)
         }
