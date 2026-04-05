@@ -13,6 +13,7 @@ struct DonGato_DVRApp: App {
     @State private var captureService = CaptureService()
     @State private var sceneDetector = SceneDetector()
     @State private var transcodeService = TranscodeService()
+    @State private var dvrSettings = DVRSettings()
 
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
@@ -34,6 +35,7 @@ struct DonGato_DVRApp: App {
                 .environment(captureService)
                 .environment(sceneDetector)
                 .environment(transcodeService)
+                .environment(dvrSettings)
         }
         .modelContainer(sharedModelContainer)
     }

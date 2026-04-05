@@ -10,7 +10,10 @@ import SwiftUI
 struct VCRView: View {
     @Environment(CaptureService.self) private var captureService
     @Environment(SceneDetector.self) private var sceneDetector
+    @Environment(DVRSettings.self) private var dvrSettings
     @State private var showDetectionSettings = false
+    @State private var showDVRSettings = false
+    @State private var showOrientationConfirm = false
 
     var body: some View {
         @Bindable var capture = captureService
@@ -27,10 +30,26 @@ struct VCRView: View {
                         .opacity(0.6)
                 }
                 VideoPreviewContainer()
+                    .onChange(of: dvrSettings.rotation) {
+                        captureService.applyOrientation(rotation: dvrSettings.rotation, mirrored: dvrSettings.isMirrored)
+                    }
+                    .onChange(of: dvrSettings.isMirrored) {
+                        captureService.applyOrientation(rotation: dvrSettings.rotation, mirrored: dvrSettings.isMirrored)
+                    }
             }
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: 300)
                 .background(Color.black)
+                .clipped()
+                .onLongPressGesture(minimumDuration: 1.0) {
+                    showOrientationConfirm = true
+                }
+                .confirmationDialog("Set current view as upright?", isPresented: $showOrientationConfirm) {
+                    Button("Set as Upright") {
+                        dvrSettings.lockCurrentOrientation()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                }
                 .overlay(alignment: .topLeading) {
                     if captureService.isRecording {
                         HStack(spacing: 6) {
@@ -141,18 +160,31 @@ struct VCRView: View {
                 // Transport controls
                 TransportControlsView()
 
-                // Detection settings button
-                Button {
-                    showDetectionSettings = true
-                } label: {
-                    HStack {
-                        Image(systemName: "waveform.badge.magnifyingglass")
-                        Text("Detection Settings")
+                // Settings buttons
+                HStack(spacing: 24) {
+                    Button {
+                        showDVRSettings = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "tv.badge.wifi")
+                            Text("DVR Settings")
+                        }
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.cyan)
                     }
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(.orange)
-                    .padding(.vertical, 8)
+
+                    Button {
+                        showDetectionSettings = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "waveform.badge.magnifyingglass")
+                            Text("Detection")
+                        }
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.orange)
+                    }
                 }
+                .padding(.vertical, 8)
                 .padding(.bottom, 12)
             }
             .background(Color(white: 0.08))
@@ -160,10 +192,17 @@ struct VCRView: View {
         .sheet(isPresented: $showDetectionSettings) {
             DetectionSettingsView()
         }
+        .sheet(isPresented: $showDVRSettings) {
+            DVRSettingsView()
+        }
         .onAppear {
             captureService.sceneDetector = sceneDetector
             captureService.setupSession()
             captureService.startPreview()
+            // Apply saved orientation after preview starts
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                captureService.applyOrientation(rotation: dvrSettings.rotation, mirrored: dvrSettings.isMirrored)
+            }
         }
         .onDisappear {
             captureService.stopPreview()

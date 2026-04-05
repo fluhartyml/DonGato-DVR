@@ -86,11 +86,29 @@ final class CaptureService: NSObject {
 
     var sceneDetector: SceneDetector?
 
+    private(set) var activePreviewLayer: AVCaptureVideoPreviewLayer?
+
     var previewLayer: AVCaptureVideoPreviewLayer? {
+        if let existing = activePreviewLayer { return existing }
         guard let session = captureSession else { return nil }
         let layer = AVCaptureVideoPreviewLayer(session: session)
-        layer.videoGravity = .resizeAspect
+        layer.videoGravity = .resizeAspectFill
+        activePreviewLayer = layer
         return layer
+    }
+
+    func applyOrientation(rotation: VideoRotation, mirrored: Bool) {
+        guard let connection = activePreviewLayer?.connection else { return }
+
+        let angle: CGFloat = rotation.angle
+        if connection.isVideoRotationAngleSupported(angle) {
+            connection.videoRotationAngle = angle
+        }
+
+        if connection.isVideoMirroringSupported {
+            connection.isVideoMirrored = mirrored
+            connection.automaticallyAdjustsVideoMirroring = false
+        }
     }
 
     // MARK: - Segment File Tracking
