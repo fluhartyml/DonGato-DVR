@@ -51,12 +51,24 @@ struct VCRView: View {
                             .foregroundStyle(.red)
                             .padding(12)
                     } else if captureService.isUsingBuiltInCamera {
-                        HStack(spacing: 6) {
-                            Image(systemName: "video.fill")
-                            Text("CAMCORDER")
+                        VStack(alignment: .trailing, spacing: 8) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "video.fill")
+                                Text("CAMCORDER")
+                            }
+                            .font(.system(size: 18, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.orange.opacity(0.8))
+
+                            // Flip camera button
+                            Button {
+                                captureService.flipCamera()
+                            } label: {
+                                Image(systemName: "camera.rotate.fill")
+                                    .font(.system(size: 28))
+                                    .foregroundStyle(.white.opacity(0.8))
+                            }
+                            .disabled(captureService.isRecording)
                         }
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.orange.opacity(0.8))
                         .padding(12)
                     }
                 }
@@ -111,7 +123,7 @@ struct VCRView: View {
                 HStack(spacing: 12) {
                     ForEach(CaptureQuality.allCases) { q in
                         Button {
-                            capture.quality = q
+                            captureService.changeQuality(q)
                         } label: {
                             Text(q.displayName)
                                 .font(.system(size: 18, weight: .medium, design: .monospaced))

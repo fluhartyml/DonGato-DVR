@@ -56,6 +56,7 @@ final class CaptureService: NSObject {
     private(set) var currentRecordingURL: URL?
     private(set) var splitPressTime: TimeInterval?
     var isSplitPressed = false
+    var cameraPosition: AVCaptureDevice.Position = .back
 
     var quality: CaptureQuality = .fullHD
     var contentMode: ContentMode = .chapters
@@ -99,10 +100,10 @@ final class CaptureService: NSObject {
             device = external
             isUsingBuiltInCamera = false
             deviceName = device.localizedName
-        } else if let builtIn = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
+        } else if let builtIn = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: cameraPosition) {
             device = builtIn
             isUsingBuiltInCamera = true
-            deviceName = "Camcorder Mode"
+            deviceName = cameraPosition == .front ? "Camcorder — Front" : "Camcorder — Rear"
         } else {
             deviceConnected = false
             deviceName = "No Camera Available"
@@ -163,6 +164,43 @@ final class CaptureService: NSObject {
 
         session.commitConfiguration()
         self.captureSession = session
+    }
+
+    func flipCamera() {
+        guard isUsingBuiltInCamera, !isRecording else { return }
+        cameraPosition = (cameraPosition == .back) ? .front : .back
+        stopPreview()
+        setupSession()
+        startPreview()
+    }
+
+    func changeQuality(_ newQuality: CaptureQuality) {
+        guard !isRecording else { return }
+        quality = newQuality
+        // If using built-in camera, reconfigure session for new resolution
+        if isUsingBuiltInCamera {
+            guard let session = captureSession else { return }
+            session.beginConfiguration()
+            switch newQuality {
+            case .uhd:
+                if session.canSetSessionPreset(.hd4K3840x2160) {
+                    session.sessionPreset = .hd4K3840x2160
+                }
+            case .fullHD:
+                if session.canSetSessionPreset(.hd1920x1080) {
+                    session.sessionPreset = .hd1920x1080
+                }
+            case .hd:
+                if session.canSetSessionPreset(.hd1280x720) {
+                    session.sessionPreset = .hd1280x720
+                }
+            case .sd:
+                if session.canSetSessionPreset(.vga640x480) {
+                    session.sessionPreset = .vga640x480
+                }
+            }
+            session.commitConfiguration()
+        }
     }
 
     func startPreview() {
