@@ -21,7 +21,7 @@ struct AboutView: View {
             VStack(spacing: 24) {
                 // App icon and name
                 VStack(spacing: 12) {
-                    Image("AppIcon")
+                    Image("DonGatoLogo")
                         .resizable()
                         .frame(width: 120, height: 120)
                         .clipShape(RoundedRectangle(cornerRadius: 24))

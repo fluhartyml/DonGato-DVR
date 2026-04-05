@@ -20,7 +20,7 @@ struct VCRView: View {
             // Video preview area
             ZStack {
                 if !captureService.deviceConnected {
-                    Image("AppIcon")
+                    Image("DonGatoLogo")
                         .resizable()
                         .scaledToFit()
                         .frame(maxWidth: 300, maxHeight: 300)
